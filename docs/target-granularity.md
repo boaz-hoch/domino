@@ -55,7 +55,7 @@ Rebuilding these in Rust would mean re-deriving Nx's semantics on every Nx relea
 Reading `nrwl/nx#36841` alongside Domino surfaced places where Domino under-selects on its own terms. They are tracked as separate fixes, not as parity work:
 
 - A renamed file never marked the project it moved out of.
-- A change to the workspace-root `tsconfig.base.json` / `tsconfig.json` affected nothing.
+- A change to the workspace-root `tsconfig.base.json` (the tsconfig Domino's resolution reads) affected nothing.
 - A glob-free `namedInputs` path (`{workspaceRoot}/config`) matched only a file with that exact name, not the directory's contents.
 - Lockfile diffing compared versions only, missing integrity-only changes.
 - Project links declared in target config (`inputs[].projects`, `dependsOn[].projects`, and the same shapes in `targetDefaults`) created no edge.
