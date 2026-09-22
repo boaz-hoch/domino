@@ -6116,6 +6116,21 @@ fn test_inputs_projects_link_marks_dependent() {
   assert_eq!(affected, vec!["lib-a".to_string(), "lib-b".to_string()]);
 }
 
+/// Nx's `"project:target"` string sugar in `dependsOn` names a project when the
+/// prefix is one. A target that merely contains a colon (`build:prod`) and a
+/// `^`-prefixed string (the project's dependencies) name none.
+#[test]
+fn test_depends_on_project_target_string_marks_dependent() {
+  let affected =
+    affected_after_lib_a_change(r#"{ "deploy": { "dependsOn": ["lib-a:build", "build:prod"] } }"#);
+  assert_eq!(affected, vec!["lib-a".to_string(), "lib-b".to_string()]);
+
+  let affected = affected_after_lib_a_change(
+    r#"{ "deploy": { "dependsOn": ["^lib-a:build", "build:prod"] }, "test": { "inputs": ["lib-a:x"] } }"#,
+  );
+  assert_eq!(affected, vec!["lib-a".to_string()]);
+}
+
 /// `self` and `dependencies` are Nx keywords, not project names: neither links
 /// lib-b to lib-a.
 #[test]

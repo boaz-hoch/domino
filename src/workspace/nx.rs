@@ -137,9 +137,27 @@ fn default_entries(value: &serde_json::Value) -> Vec<&serde_json::Value> {
 /// ["x"] }`, `{ "projects": ["x"], "target": "build" }`). `projects` may be a
 /// string or an array. Raw values are returned as written (including `self`,
 /// `dependencies` and glob or `!` patterns); `core` interprets them.
-fn linked_projects(entries: &serde_json::Value) -> Vec<String> {
+///
+/// `dependsOn` also accepts Nx's `"project:target"` string sugar. Nx reads the
+/// part before a `:` as a project only when a project has that name, and
+/// otherwise treats the whole string as a target name containing colons
+/// (`build:prod`). Every `:`-prefix is returned as a candidate: one that is not
+/// a project name never matches an affected project downstream, which is the
+/// same rule. `^`-prefixed strings name the project's dependencies, not a
+/// project, and `inputs` strings are named inputs, so neither yields one.
+fn linked_projects(entries: &serde_json::Value, is_depends_on: bool) -> Vec<String> {
   let mut projects = Vec::new();
   for entry in entries.as_array().into_iter().flatten() {
+    if let Some(sugar) = entry.as_str() {
+      if is_depends_on && !sugar.starts_with('^') {
+        projects.extend(
+          sugar
+            .match_indices(':')
+            .map(|(colon, _)| sugar[..colon].to_string()),
+        );
+      }
+      continue;
+    }
     match entry.get("projects") {
       Some(serde_json::Value::String(s)) => projects.push(s.clone()),
       Some(serde_json::Value::Array(items)) => projects.extend(
@@ -170,11 +188,11 @@ fn target_config_projects(
     (&target.depends_on, "dependsOn"),
   ] {
     match own {
-      Some(value) => projects.extend(linked_projects(value)),
+      Some(value) => projects.extend(linked_projects(value, key == "dependsOn")),
       None => {
         for entry in &default {
           if let Some(value) = entry.get(key) {
-            projects.extend(linked_projects(value));
+            projects.extend(linked_projects(value, key == "dependsOn"));
           }
         }
       }
