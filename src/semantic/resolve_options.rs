@@ -37,15 +37,10 @@ pub fn create_resolve_options(cwd: &Path, projects: &[Project]) -> ResolveOption
   // entirely and lets main_files + extensions find index.ts directly.
   // The Nx project name (`my-lib`) and the package.json name (`@scope/my-lib`)
   // often differ. Alias both at the same source root so package-name imports,
-  // including subpaths, resolve to source.
-  let mut alias = Vec::with_capacity(projects.len());
-  for project in projects {
-    let target = alias_directory(cwd, project).to_string_lossy().into_owned();
-    alias.push((project.name.clone(), vec![AliasValue::Path(target.clone())]));
-    if let Some(package_name) = distinct_package_name(cwd, project) {
-      alias.push((package_name, vec![AliasValue::Path(target)]));
-    }
-  }
+  // including subpaths, resolve to source. oxc_resolver keeps the first alias
+  // whose key matches, so each key is registered once and a package.json name
+  // wins over another project's Nx name.
+  let alias = workspace_aliases(cwd, projects);
 
   ResolveOptions {
     // TypeScript variants are listed before their JS counterparts (mirroring the
@@ -110,6 +105,32 @@ pub fn create_resolve_options(cwd: &Path, projects: &[Project]) -> ResolveOption
     },
     ..Default::default()
   }
+}
+
+fn workspace_aliases(cwd: &Path, projects: &[Project]) -> Vec<(String, Vec<AliasValue>)> {
+  let mut package_aliases = Vec::new();
+  let mut project_aliases = Vec::with_capacity(projects.len());
+  for project in projects {
+    let target = alias_directory(cwd, project).to_string_lossy().into_owned();
+    let package_name = distinct_package_name(cwd, project)
+      .filter(|package_name| !package_aliases.iter().any(|(name, _)| name == package_name));
+    if let Some(package_name) = package_name {
+      package_aliases.push((package_name, target.clone()));
+    }
+    project_aliases.push((project.name.clone(), target));
+  }
+
+  let mut alias = Vec::with_capacity(package_aliases.len() + project_aliases.len());
+  for (name, target) in package_aliases {
+    alias.push((name, vec![AliasValue::Path(target)]));
+  }
+  for (name, target) in project_aliases {
+    if alias.iter().any(|(key, _)| key == &name) {
+      continue;
+    }
+    alias.push((name, vec![AliasValue::Path(target)]));
+  }
+  alias
 }
 
 fn alias_directory(cwd: &Path, project: &Project) -> PathBuf {
@@ -888,6 +909,88 @@ mod tests {
       "got {:?}",
       resolved.path()
     );
+  }
+
+  #[test]
+  fn test_package_name_alias_wins_over_colliding_nx_name() {
+    let tmp = TempDir::new().unwrap();
+    let cwd = tmp.path();
+
+    let decoy = cwd.join("libs/decoy/src");
+    fs::create_dir_all(&decoy).unwrap();
+    fs::write(decoy.join("widget.ts"), "export const widget = 'decoy';\n").unwrap();
+    fs::write(
+      cwd.join("libs/decoy/package.json"),
+      r#"{ "name": "@scope/my-lib" }"#,
+    )
+    .unwrap();
+
+    let feature = cwd.join("libs/feature/src");
+    fs::create_dir_all(&feature).unwrap();
+    fs::write(
+      feature.join("widget.ts"),
+      "export const widget = 'feature';\n",
+    )
+    .unwrap();
+    fs::write(
+      cwd.join("libs/feature/package.json"),
+      r#"{ "name": "@scope/my-lib" }"#,
+    )
+    .unwrap();
+
+    let decoy_project = Project {
+      name: "@scope/my-lib".to_string(),
+      root: PathBuf::from("libs/decoy"),
+      source_root: PathBuf::from("libs/decoy/src"),
+      ts_config: None,
+      implicit_dependencies: vec![],
+      targets: vec![],
+    };
+    let feature_project = Project {
+      name: "my-lib".to_string(),
+      root: PathBuf::from("libs/feature"),
+      source_root: PathBuf::from("libs/feature/src"),
+      ts_config: None,
+      implicit_dependencies: vec![],
+      targets: vec![],
+    };
+
+    for projects in [
+      vec![decoy_project.clone(), feature_project.clone()],
+      vec![feature_project, decoy_project],
+    ] {
+      let opts = create_resolve_options(cwd, &projects);
+      assert_eq!(
+        opts
+          .alias
+          .iter()
+          .filter(|(key, _)| key == "@scope/my-lib")
+          .count(),
+        1,
+        "a colliding Nx name and package.json name share one alias"
+      );
+      let target = alias_target(&opts, "@scope/my-lib").unwrap();
+      assert!(
+        target.ends_with("libs/feature/src"),
+        "package.json name should own the alias, got: {target}"
+      );
+      assert!(
+        alias_target(&opts, "my-lib")
+          .unwrap()
+          .ends_with("libs/feature/src"),
+        "the Nx name is still aliased when it does not collide"
+      );
+
+      let resolver = oxc_resolver::Resolver::new(opts);
+      let resolved = resolver
+        .resolve(cwd, "@scope/my-lib/widget")
+        .expect("colliding specifier should resolve");
+      let source = fs::read_to_string(resolved.path()).unwrap();
+      assert!(
+        source.contains("'feature'"),
+        "resolved the decoy project: {source}"
+      );
+    }
   }
 
   #[test]
